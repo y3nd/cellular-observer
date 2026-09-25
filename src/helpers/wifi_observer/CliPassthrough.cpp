@@ -110,13 +110,15 @@ bool cliPassthroughIsAllowed(const char* line) {
     // before ever reaching dispatchObserverCli. "display " (#141) likewise
     // admits the "display always on/off" toggle, dispatched in ObserverCli.
     // "caplog " and a bare "caplog" (#1194) admit `caplog status` and
-    // `caplog forward ...`, the repeater's verbs.
+    // `caplog forward ...`, the repeater's verbs. "ble " admits the persistent
+    // observer BLE availability toggle.
     size_t skip = 0;
     if      (strncmp(p, "get ", 4) == 0)  skip = 4;
     else if (strncmp(p, "set ", 4) == 0)  skip = 4;
     else if (strncmp(p, "mqtt ", 5) == 0) skip = 5;
     else if (strncmp(p, "wifi ", 5) == 0) skip = 5;
     else if (strncmp(p, "display ", 8) == 0) skip = 8;  // #141: "display always on/off" toggle
+    else if (strncmp(p, "ble ", 4) == 0) skip = 4;
     else if (strncmp(p, "caplog ", 7) == 0) skip = 7;   // #1194: caplog status / caplog forward
     else if (strcmp(p, "caplog") == 0) return true;      // #1194: bare `caplog` is status
     else return false;

@@ -6,7 +6,11 @@
 // + pipeline are brought up exactly once.
 
 #include "WifiObserver.h"
-#include "WifiBootstrap.h"
+#if defined(OFFBAND_OBSERVER_CELLULAR)
+  #include "../cellular_observer/CellularBootstrap.h"
+#else
+  #include "WifiBootstrap.h"
+#endif
 #include <helpers/diagnostics/CrashLog.h>
 #include "ObserverPipeline.h"
 #if defined(OFFBAND_CAPLOG_FORWARD)
@@ -22,6 +26,32 @@
 #endif
 
 namespace offband {
+
+namespace {
+void observerNetworkBegin() {
+#if defined(OFFBAND_OBSERVER_CELLULAR)
+    cellularBootstrap().begin();
+#else
+    wifiBootstrap().begin();
+#endif
+}
+
+void observerNetworkLoop() {
+#if defined(OFFBAND_OBSERVER_CELLULAR)
+    cellularBootstrap().loop();
+#else
+    wifiBootstrap().loop();
+#endif
+}
+
+bool observerNetworkConnected() {
+#if defined(OFFBAND_OBSERVER_CELLULAR)
+    return cellularBootstrap().isConnected();
+#else
+    return wifiBootstrap().isStaConnected();
+#endif
+}
+}  // namespace
 
 // Singleton pool. ObserverCli + main.cpp's status snapshot updater
 // access via wifiObserverPool().
@@ -78,9 +108,14 @@ void wifiObserverBegin() {
 #endif
 
     crashLogf("[WifiObserver] subsystem starting");
-    wifiBootstrap().begin();
+    observerNetworkBegin();
+#if defined(OFFBAND_OBSERVER_CELLULAR)
+    crashLogf("[WifiObserver] cellular bootstrap returned; state=%d",
+              (int)cellularBootstrap().state());
+#else
     crashLogf("[WifiObserver] wifiBootstrap.begin() returned; state=%d",
               (int)wifiBootstrap().state());
+#endif
 
 #if defined(ARDUINO) && defined(OFFBAND_CAPLOG_FORWARD)
     // #1061: load the syslog sink and re-arm `caplog forward on` if it was on,
@@ -136,7 +171,7 @@ void wifiObserverSetMeshContext(
 // wifiObserverLoop -- per-iteration driver
 // ---------------------------------------------------------------------------
 void wifiObserverLoop() {
-    wifiBootstrap().loop();
+    observerNetworkLoop();
 
 #ifdef ARDUINO
     uint32_t now = millis();
@@ -153,7 +188,7 @@ void wifiObserverLoop() {
     // (BrokerState::HeldNoClock) until wallClockSane(); tcp brokers publish now.
 
     // Phase 1 -- start SNTP immediately (no GPS pre-grace).
-    if (!s_sntp_started && s_context_set && wifiBootstrap().isStaConnected()) {
+    if (!s_sntp_started && s_context_set && observerNetworkConnected()) {
         configTime(0, 0, "pool.ntp.org", "time.nist.gov", "time.google.com");
         s_sntp_started    = true;
         s_sntp_started_ms = now;
@@ -175,7 +210,7 @@ void wifiObserverLoop() {
     // self-defer to HeldNoClock until wallClockSane() and release the instant the
     // clock arrives. A clockless start no longer blocks the tcp feed.
     if (!s_pool_started && s_identity != nullptr &&
-        wifiBootstrap().isStaConnected() &&
+        observerNetworkConnected() &&
         (s_gps_time_locked || s_sntp_started)) {
         crashLogf("[WifiObserver] bringing up MqttBrokerPool (tcp now; wss held until clock; wall=%lu)",
                   (unsigned long)time(nullptr));

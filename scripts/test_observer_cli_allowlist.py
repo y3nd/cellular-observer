@@ -107,6 +107,11 @@ static const GateCase kGateCases[] = {
     {"display rotate 0",             true},   // #148: rotate command
     {"display rotate 180",           true},   // #148
     {"display flip",                 true},   // #148: flip toggle
+    {"ble on",                      true},
+    {"ble off",                     true},
+    {"ble enable",                  true},
+    {"ble disable",                 true},
+    {"ble status",                  true},
     {"caplog",                       true},   // #1194: bare caplog is status
     {"caplog status",                true},   // #1194
     {"caplog forward on",            true},   // #1194: until off
@@ -310,7 +315,7 @@ def main() -> int:
         out = (r.stdout or "").rstrip()
         # Echo full per-case output for visibility.
         print(out)
-        if r.returncode == 0 and "OK: 40 cases pass." in out:   # #141/#148: +6 display; #1194: +11 caplog/syslog gate, +1 exec
+        if r.returncode == 0 and "OK: 45 cases pass." in out:   # #141/#148: +6 display; BLE +5; #1194: +11 caplog/syslog gate, +1 exec
             return 0
         print(f"FAIL (rc={r.returncode})")
         if r.stderr:

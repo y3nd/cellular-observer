@@ -9,7 +9,11 @@
 #include "../CaplogForwardCli.h"
 #include "../CaplogUdpSink.h"
 #include "ConfigSchema.h"
-#include "WifiBootstrap.h"
+#if defined(OFFBAND_OBSERVER_CELLULAR)
+  #include "../cellular_observer/CellularBootstrap.h"
+#else
+  #include "WifiBootstrap.h"
+#endif
 
 namespace offband {
 
@@ -25,7 +29,11 @@ CaplogForward& caplogForwarder() {
 }
 
 bool caplogForwardLinkUp() {
+#if defined(OFFBAND_OBSERVER_CELLULAR)
+    return cellularBootstrap().isConnected();
+#else
     return wifiBootstrap().isStaConnected();
+#endif
 }
 
 void observerCaplogForwardBegin(uint32_t now_ms) {

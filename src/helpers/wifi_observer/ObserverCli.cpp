@@ -49,6 +49,72 @@ static bool eq(const char* a, const char* b) {
     return a != nullptr && b != nullptr && strcmp(a, b) == 0;
 }
 
+#ifdef OFFBAND_OBSERVER
+static BleEnabledApplier s_ble_enabled_applier = nullptr;
+
+void setBleEnabledApplier(BleEnabledApplier fn) {
+    s_ble_enabled_applier = fn;
+}
+
+bool getBleEnabled() {
+#ifdef ARDUINO
+    Preferences p;
+    if (!p.begin("offband_ble", /*readOnly=*/true)) return true;
+    bool enabled = p.getBool("enabled", true);
+    p.end();
+    return enabled;
+#else
+    return true;
+#endif
+}
+
+static bool saveBleEnabled(bool enabled) {
+#ifdef ARDUINO
+    Preferences p;
+    if (!p.begin("offband_ble", /*readOnly=*/false)) return false;
+    bool ok = p.putBool("enabled", enabled) == sizeof(bool);
+    p.end();
+    return ok;
+#else
+    (void)enabled;
+    return true;
+#endif
+}
+
+static bool handleBle(char* reply, size_t reply_size, const char* value) {
+    if (s_ble_enabled_applier == nullptr) {
+        snprintf(reply, reply_size, "ERROR: BLE is not supported on this target\n");
+        return true;
+    }
+    if (eq(value, "status") || value == nullptr || *value == '\0') {
+        snprintf(reply, reply_size, "ble: %s\n", getBleEnabled() ? "on" : "off");
+        return true;
+    }
+    const bool turn_on = eq(value, "on") || eq(value, "enable");
+    const bool turn_off = eq(value, "off") || eq(value, "disable");
+    if (!turn_on && !turn_off) {
+        snprintf(reply, reply_size,
+                 "ERROR: usage: ble on|enable | ble off|disable | ble status\n");
+        return true;
+    }
+
+    const bool enabled = turn_on;
+    const bool previous = getBleEnabled();
+    if (!s_ble_enabled_applier(enabled)) {
+        snprintf(reply, reply_size, "ERROR: could not turn BLE %s\n", value);
+        return true;
+    }
+    if (!saveBleEnabled(enabled)) {
+        // Keep live behavior aligned with the last durable value if NVS fails.
+        s_ble_enabled_applier(previous);
+        snprintf(reply, reply_size, "ERROR: BLE preference was not saved\n");
+        return true;
+    }
+    snprintf(reply, reply_size, "ble: %s (saved)\n", enabled ? "on" : "off");
+    return true;
+}
+#endif
+
 // Find first non-space after skipping `prefix`. Returns nullptr if
 // the string does not start with prefix (followed by space or NUL).
 static const char* skipPrefix(const char* s, const char* prefix) {
@@ -708,6 +774,11 @@ bool dispatchObserverCli(const char* cmd, char* reply, size_t reply_size,
     }
 
 #ifdef OFFBAND_OBSERVER   // #538 (Option A): display/wifi verbs are observer-only
+    // BLE availability toggle. The preference defaults on for backward
+    // compatibility and is applied at boot by companion_radio/main.cpp.
+    const char* ble_rest = skipPrefix(cmd, "ble");
+    if (ble_rest != nullptr) return handleBle(reply, reply_size, ble_rest);
+
     // "display ..." commands -- #141: display always-on toggle.
     const char* disp_rest = skipPrefix(cmd, "display");
     if (disp_rest != nullptr) {

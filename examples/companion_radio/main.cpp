@@ -149,6 +149,25 @@ static void applyDisplayRotation(uint8_t deg) { ui_task.requestRotation(deg); }
 static bool displayRotationSupported() { return ui_task.displaySupportsRotation(); }
 #endif
 
+#if defined(OFFBAND_OBSERVER) && defined(BLE_PIN_CODE)
+static bool ble_interface_registered = false;
+
+static bool applyBleEnabled(bool enabled) {
+  if (enabled) {
+    if (!ble_interface_registered) {
+      if (!interface_manager.addInterface(InterfaceType::Bluetooth, &bluetooth_interface)) {
+        return false;
+      }
+      ble_interface_registered = true;
+    }
+    bluetooth_interface.enable();
+    return bluetooth_interface.isEnabled();
+  }
+  bluetooth_interface.disable();
+  return !bluetooth_interface.isEnabled();
+}
+#endif
+
 StdRNG fast_rng;
 SimpleMeshTables tables;
 MyMesh the_mesh(radio_driver, fast_rng, rtc_clock, tables, store
@@ -472,7 +491,17 @@ void setup() {
 // add bluetooth interface
 #if defined(BLE_PIN_CODE)
   bluetooth_interface.begin(BLE_NAME_PREFIX, the_mesh.getNodePrefs()->node_name, the_mesh.getBLEPin());
-  interface_manager.addInterface(InterfaceType::Bluetooth, &bluetooth_interface);
+  #if defined(OFFBAND_OBSERVER)
+    // begin() initializes NimBLE but does not advertise. When the persisted
+    // preference is off, leave the transport unregistered so the manager's
+    // initial enable-all pass cannot produce even a brief boot advertisement.
+    if (offband::getBleEnabled()) {
+      ble_interface_registered = interface_manager.addInterface(
+          InterfaceType::Bluetooth, &bluetooth_interface);
+    }
+  #else
+    interface_manager.addInterface(InterfaceType::Bluetooth, &bluetooth_interface);
+  #endif
 #endif
 
 // add wifi interface
@@ -525,6 +554,12 @@ void setup() {
 
   the_mesh.startInterface(interface_manager);
   CW_PHASE("ESP32:post the_mesh.startInterface");
+#if defined(OFFBAND_OBSERVER) && defined(BLE_PIN_CODE)
+  // Commands arrive only after setup, so register the live hook after the
+  // manager has completed its enable-all pass. A boot-disabled interface can
+  // subsequently be registered and enabled by `ble on` without rebooting.
+  offband::setBleEnabledApplier(&applyBleEnabled);
+#endif
   // #411: mirror captured serial-log lines to the live console EXCEPT where the
   // framed protocol runs on Serial itself (USB-serial companion) -- there it stays
   // capture-only so nothing raw corrupts the protocol line.

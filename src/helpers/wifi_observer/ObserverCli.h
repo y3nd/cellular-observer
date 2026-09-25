@@ -39,12 +39,20 @@ namespace offband {
 //   display always on | display normal           -- #141: keep the screen lit / restore the 15 s blank
 //                                                    ("display always off" is accepted as an alias for "display normal")
 //   display rotate <0|180> | display flip         -- #148: rotate the display 0/180 ("flip" toggles)
+//   ble on|enable | ble off|disable | ble status  -- persist + immediately apply BLE availability
 //
 // All "set" commands write to NVS via ConfigSchema and call
 // pool.reloadSlot(N) if a per-slot field changed. Slot range [0,
 // OFFBAND_MAX_BROKERS).
 bool dispatchObserverCli(const char* cmd, char* reply, size_t reply_size,
                          MqttBrokerPool& pool);
+
+// BLE is owned by companion_radio/main.cpp, while its CLI and NVS preference
+// live here. The callback keeps ObserverCli independent of the concrete BLE
+// transport and also makes unsupported observer targets fail explicitly.
+using BleEnabledApplier = bool (*)(bool enabled);
+void setBleEnabledApplier(BleEnabledApplier fn);
+bool getBleEnabled();
 
 // The pool accessor dispatchObserverCli reads live state from (and that CommonCLI
 // passes as the `pool` arg). Each role provides one definition: the observer via

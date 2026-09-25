@@ -1,9 +1,8 @@
 # Observer `_sys` CLI command reference
 
 The Offband observer is configured over the **`_sys` system channel** in the
-MeshCore companion app (BLE) — type these as channel messages. The observer
-build has **no USB-serial text console**; the `_sys` channel is the management
-surface.
+MeshCore companion app (BLE), or through the USB serial text console on builds
+that expose it. Both paths use the same allowlist and command dispatcher.
 
 ## Grammar (#45)
 
@@ -19,7 +18,7 @@ The verb + field are case-insensitive (phone auto-capitalize is tolerated, so
 **write-only** — never echoed back.
 
 Commands reach the dispatcher through a `_sys` allowlist that permits the
-`get`, `set`, `mqtt`, `wifi`, and `display` verbs and rejects shell
+`get`, `set`, `mqtt`, `wifi`, `display`, `ble`, and `caplog` verbs and rejects shell
 metacharacters (`$(`, backtick, `!`) plus device/filesystem verbs
 (`reboot`/`format`/`erase`/`factory`/`ota.`/`fs.`/`flash.`/`rm`/`cat`/`exit`/`quit`).
 
@@ -52,6 +51,18 @@ with a display (Heltec V3 / V4 OLED, V4 TFT).
 
 > Rotation is **0/180 only** (landscape flip); 90/270 portrait is not supported.
 > Both settings default off / 0 and survive a reboot.
+
+## Bluetooth
+
+| Command | Effect |
+|---|---|
+| `ble status` | show the persisted BLE availability setting |
+| `ble on` / `ble enable` | enable BLE advertising immediately and persist it across reboots |
+| `ble off` / `ble disable` | stop BLE advertising, disconnect its client, and persist it across reboots |
+
+BLE defaults on for backward compatibility. When persisted off, the next boot
+initializes the stack but does not register or advertise the BLE transport;
+USB serial can turn it back on without rebooting.
 
 ## MQTT broker pool
 

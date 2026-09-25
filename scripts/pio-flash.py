@@ -69,6 +69,11 @@ from firmware_identity import get_firmware_identity  # noqa: E402
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+# Use the PlatformIO executable installed beside the interpreter running this
+# wrapper. This keeps Windows hosts independent of whether `pio` is on PATH.
+_pio_sibling = Path(sys.executable).with_name("pio.exe")
+PIO_COMMAND = str(_pio_sibling) if _pio_sibling.exists() else "pio"
+
 # ---------------------------------------------------------------------------
 # Canonical per-host state directory (#1012).
 #
@@ -294,14 +299,14 @@ def enumerate_ports() -> list[dict]:
     try:
         result = subprocess.run(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", PS_ENUMERATE],
-            capture_output=True, text=True, check=True, timeout=15,
+            capture_output=True, text=True, check=True, timeout=30,
         )
     except subprocess.CalledProcessError as e:
         refuse(f"PowerShell enumeration failed: {e.stderr or e}")
     except FileNotFoundError:
         refuse("powershell.exe not found. This wrapper is Windows-only in v1.")
     except subprocess.TimeoutExpired:
-        refuse("PowerShell enumeration timed out (15s)")
+        refuse("PowerShell enumeration timed out (30s)")
 
     ports = []
     for line in result.stdout.splitlines():
@@ -895,6 +900,10 @@ def env_with_auth() -> dict:
     pass-through hook keys on."""
     e = os.environ.copy()
     e["PIO_FLASH_AUTHORIZED"] = "1"
+    # esptool 5 renders a Unicode progress bar. Windows' default cp1252
+    # subprocess pipe cannot encode it, aborting an otherwise valid flash.
+    e["PYTHONUTF8"] = "1"
+    e["PYTHONIOENCODING"] = "utf-8"
     return e
 
 
@@ -907,8 +916,17 @@ _NRFUTIL_OK = ["device programmed"]
 _NRFUTIL_FAIL = ["failed to upgrade", "traceback (most recent call", "could not open port", "exception"]
 
 
+def _transient_port_open_failure(output: str) -> bool:
+    """True only when esptool failed before flashing because Windows still
+    owns the COM handle released by the preceding bootloader trigger."""
+    low = output.lower()
+    return "could not open" in low and any(marker in low for marker in (
+        "port is busy", "permissionerror", "access is denied", "accès refusé",
+    ))
+
+
 def _run_flasher(cmd: list, env_d: dict, success_markers: list,
-                 failure_markers: list) -> tuple[int, bool]:
+                 failure_markers: list) -> tuple[str, bool]:
     """Run a flasher subprocess, capture + print its output, and decide success
     by PARSING that output - never by exit code alone.
 
@@ -929,7 +947,7 @@ def _run_flasher(cmd: list, env_d: dict, success_markers: list,
         err(f"flasher result NOT verified (rc={proc.returncode}, "
             f"success_marker={'yes' if succeeded else 'NO'}, "
             f"failure_marker={'YES' if failed else 'no'})")
-    return proc.returncode, ok
+    return output, ok
 
 
 def _touch_1200(com: str) -> None:
@@ -956,7 +974,7 @@ def _read_mac_on_port(com: str) -> str:
     Tier-A side effect: resets the chip into ROM bootloader and back."""
     try:
         result = subprocess.run(
-            ["python", "-m", "esptool", "--port", com, "read_mac"],
+            [sys.executable, "-m", "esptool", "--port", com, "read_mac"],
             env=env_with_auth(), capture_output=True, text=True, timeout=60,
         )
     except subprocess.TimeoutExpired:
@@ -1007,7 +1025,7 @@ def _esp32_trigger_download(com: str) -> None:
     out(f"  (esptool default-reset {com} into download; connect failure is expected)")
     try:
         subprocess.run(
-            ["python", "-m", "esptool", "--port", com,
+            [sys.executable, "-m", "esptool", "--port", com,
              "--before", "default-reset", "--after", "no-reset",
              "--connect-attempts", "1", "chip-id"],
             env=env_with_auth(), capture_output=True, text=True, timeout=30,
@@ -1191,18 +1209,26 @@ def _flash_esp32_app_slot(artifact: Path, bl_com: str, env_d: dict) -> bool:
     bootloader deterministically boots the written app. NVS (0x9000) untouched.
     Each step verified by output, not exit code."""
     out(f"[1/2] write-flash 0x{ESP32_APP0_OFFSET:x} {artifact.name} (app0; stay in download)")
-    _, ok1 = _run_flasher(
-        ["python", "-m", "esptool", "--port", bl_com, "--after", "no-reset",
-         "write-flash", hex(ESP32_APP0_OFFSET), str(artifact)],
-        env_d, _ESPTOOL_WRITE_OK, _ESPTOOL_FAIL,
-    )
+    write_cmd = [
+        sys.executable, "-m", "esptool", "--port", bl_com, "--after", "no-reset",
+        "write-flash", hex(ESP32_APP0_OFFSET), str(artifact),
+    ]
+    output, ok1 = _run_flasher(write_cmd, env_d, _ESPTOOL_WRITE_OK, _ESPTOOL_FAIL)
+    # Native-USB ESP32-S3 boards can retain the same COM number across the
+    # trigger. Windows occasionally reports that handle busy for a fraction of
+    # a second after discovery. Retry only this pre-write/open failure: never
+    # replay a command after an ambiguous or partially completed write.
+    if not ok1 and _transient_port_open_failure(output):
+        out(f"COM handle {bl_com} is still being released; retrying once in 1s...")
+        time.sleep(1.0)
+        _, ok1 = _run_flasher(write_cmd, env_d, _ESPTOOL_WRITE_OK, _ESPTOOL_FAIL)
     if not ok1:
         err("app write-flash did not verify; aborting before otadata erase.")
         return False
     out(f"[2/2] erase-region 0x{ESP32_OTADATA_OFFSET:x} 0x{ESP32_OTADATA_SIZE:x} "
         "(otadata reset -> boot app0; chip resets after)")
     _, ok2 = _run_flasher(
-        ["python", "-m", "esptool", "--port", bl_com,
+        [sys.executable, "-m", "esptool", "--port", bl_com,
          "erase-region", hex(ESP32_OTADATA_OFFSET), hex(ESP32_OTADATA_SIZE)],
         env_d, _ESPTOOL_ERASE_OK, _ESPTOOL_FAIL,
     )
@@ -1214,7 +1240,7 @@ def _flash_esp32_merged_full(artifact: Path, bl_com: str, env_d: dict) -> bool:
     image at 0x0 (spans NVS -> WIPES it; intentional, --erase). Verified by output."""
     out(f"[1/1] write-flash 0x0 {artifact.name} (FULL merged - WIPES NVS)")
     _, ok = _run_flasher(
-        ["python", "-m", "esptool", "--port", bl_com,
+        [sys.executable, "-m", "esptool", "--port", bl_com,
          "write-flash", "0x0", str(artifact)],
         env_d, _ESPTOOL_WRITE_OK, _ESPTOOL_FAIL,
     )
@@ -1452,17 +1478,16 @@ def cmd_confirm(args, registry):
     out("============================================================")
 
     cmd = [
-        "pio", "run",
+        PIO_COMMAND, "run",
         "-e", token["pio_env"],
         "-t", "upload",
         "--upload-port", port["com"],
     ]
-    env = os.environ.copy()
+    env = env_with_auth()
     # Mark that this pio invocation came from the wrapper so a future hook
     # iteration can grant pass-through. v1 hook simply lets pio-flash through
     # as the outer script; pio is invoked as a subprocess of THIS python,
     # outside the agent's Bash tool, so the hook does not intercept it.
-    env["PIO_FLASH_AUTHORIZED"] = "1"
     rc = subprocess.call(cmd, cwd=str(Path(token["firmware_dir"])), env=env)
 
     # FF5: identity fields propagated from token (captured at preview time).
@@ -2239,7 +2264,7 @@ def cmd_monitor(args, registry):
         )
         sys.stderr.flush()
     cmd = [
-        "pio", "device", "monitor",
+        PIO_COMMAND, "device", "monitor",
         "--port", port["com"],
         "--baud", str(args.baud),
     ]
@@ -2324,7 +2349,7 @@ def cmd_read_mac(args, registry):
     out(f"Running esptool read_mac on {port['com']} for {args.device}")
     out(f"(this WILL reset the chip into ROM bootloader and back)")
     cmd = [
-        "python", "-m", "esptool",
+        sys.executable, "-m", "esptool",
         "--port", port["com"],
         "read_mac",
     ]
@@ -2392,7 +2417,7 @@ def cmd_backup(args, registry):
     env_dict = os.environ.copy()
     env_dict["PIO_FLASH_AUTHORIZED"] = "1"
     cmd = [
-        "python", "-m", "esptool",
+        sys.executable, "-m", "esptool",
         "--port", port["com"],
         "--baud", str(baud),
     ]
@@ -2490,7 +2515,7 @@ def cmd_erase_region(args, registry):
     env_dict = os.environ.copy()
     env_dict["PIO_FLASH_AUTHORIZED"] = "1"
     cmd = [
-        "python", "-m", "esptool",
+        sys.executable, "-m", "esptool",
         "--chip", "esp32s3",
         "--port", port["com"],
         "erase_region", str(args.offset), str(args.size),
@@ -2600,7 +2625,7 @@ def cmd_bootstrap(args, registry):
         env["PIO_FLASH_AUTHORIZED"] = "1"
         try:
             result = subprocess.run(
-                ["python", "-m", "esptool", "--port", com, "read_mac"],
+                [sys.executable, "-m", "esptool", "--port", com, "read_mac"],
                 capture_output=True, text=True, env=env, timeout=30,
             )
         except subprocess.TimeoutExpired:
@@ -2792,7 +2817,7 @@ def cmd_factory_reset(args, registry):
 
     # Step 1: erase data partition, keep chip in bootloader for step 2
     erase_cmd = [
-        "python", "-m", "esptool",
+        sys.executable, "-m", "esptool",
         "--chip", "esp32s3",
         "--port", port["com"],
         "--after", "no_reset",
@@ -2806,7 +2831,7 @@ def cmd_factory_reset(args, registry):
 
     # Step 2: upload app via pio (re-uses bootloader connection)
     upload_cmd = [
-        "pio", "run",
+        PIO_COMMAND, "run",
         "-e", args.env,
         "-t", "upload",
         "--upload-port", port["com"],

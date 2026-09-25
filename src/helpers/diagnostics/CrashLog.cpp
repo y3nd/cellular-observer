@@ -23,6 +23,7 @@
   #include <Wire.h>          // i2cScan() bus probing
   #include <Preferences.h>   // NVS-backed boot counter
   #include <esp_attr.h>      // RTC_NOINIT_ATTR
+  #include <esp_idf_version.h>
   #include <esp_system.h>    // esp_reset_reason(), esp_register_shutdown_handler()
   #include <esp_log.h>       // esp_log_set_vprintf()
   #include <freertos/FreeRTOS.h>
@@ -55,6 +56,13 @@ const char* resetReasonString(int reason) {
         case ESP_RST_DEEPSLEEP:  return "DEEPSLEEP";
         case ESP_RST_BROWNOUT:   return "BROWNOUT";
         case ESP_RST_SDIO:       return "SDIO";
+        #if ESP_IDF_VERSION_MAJOR >= 5
+        case ESP_RST_USB:        return "USB";
+        case ESP_RST_JTAG:       return "JTAG";
+        case ESP_RST_EFUSE:      return "EFUSE";
+        case ESP_RST_PWR_GLITCH: return "PWR_GLITCH";
+        case ESP_RST_CPU_LOCKUP: return "CPU_LOCKUP";
+        #endif
         default:                 return "UNKNOWN";
     }
 #elif defined(OFFBAND_CRASHLOG_NRF52)
@@ -810,7 +818,11 @@ void heartbeatTick(uint32_t now_ms) {
               (unsigned)heap);
     if (n > 0) {
         size_t total = ((size_t)n < sizeof(line)) ? (size_t)n : sizeof(line) - 1;
+        // Production/headless targets can suppress the 1 Hz live-console noise
+        // while retaining the low-rate crash-ring health evidence below.
+        #if !defined(OFFBAND_HEARTBEAT_SERIAL) || OFFBAND_HEARTBEAT_SERIAL
         crashLogSerialWrite(line, total);   // live monitoring, every second
+        #endif
 
         // Ring-write only when the beat carries new signal: every 30 s, or the moment
         // free heap drops sharply (>8 KB since the last beat) -- a memory-pressure

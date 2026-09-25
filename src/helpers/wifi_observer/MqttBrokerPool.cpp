@@ -684,7 +684,7 @@ void MqttBrokerPool::workerLoop() {
             BrokerState st = b.runtime().state;
             if (st == BrokerState::Up || st == BrokerState::Connecting) tls_live++;
         }
-#if defined(ARDUINO)
+#if defined(ARDUINO) && (!defined(OFFBAND_ROTATION_STATUS_SERIAL) || OFFBAND_ROTATION_STATUS_SERIAL)
         // #175 diag: low-rate scheduler-state line (one line / 10s -- rule-10 safe)
         // so rotation decisions are visible on serial: why a held TLS broker is or
         // is not being promoted. Fields: heap, enabled-TLS, live/budget, dwell-left,
